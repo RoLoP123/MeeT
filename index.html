@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live Chat</title>
+<style>
+:root{--bg:#141722;--panel:#1d2132;--line:#2d3350;--fg:#f2f3f7;--mut:#979db5;--acc:#ffb703;--bad:#ff6b7a}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0}
+#online{color:var(--mut)}
+main{flex:1;min-height:0;display:grid;grid-template-columns:1fr 340px;gap:12px;padding:12px}
+.stage{position:relative;background:#000;border-radius:14px;overflow:hidden;min-height:0}
+#them{width:100%;height:100%;object-fit:cover;background:#000}
+#me{position:absolute;right:12px;bottom:12px;width:26%;max-width:190px;border-radius:8px;border:2px solid var(--line);background:#222;transform:scaleX(-1)}
+#status{position:absolute;left:12px;top:12px;background:rgba(20,23,34,.8);padding:6px 12px;border-radius:20px;color:var(--mut)}
+#status:empty{display:none}
+#gate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;background:var(--bg)}
+#gate[hidden]{display:none}
+#gate h2{margin:0;font-size:24px}
+#gate p{margin:0;color:var(--mut);max-width:420px}
+#gate label{display:flex;gap:8px;align-items:center;max-width:420px;text-align:left}
+.side{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+#log{flex:1;overflow:auto;padding:12px}
+.m{margin:0 0 8px;overflow-wrap:anywhere}
+.m b{color:var(--acc)}
+.m.y b{color:var(--mut)}
+.m.s{color:var(--mut);font-style:italic}
+form{display:flex;border-top:1px solid var(--line)}
+input[type=text]{flex:1;min-width:0;background:none;border:0;color:var(--fg);padding:12px;font:inherit}
+input[type=text]:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-top:1px solid var(--line)}
+button{background:#2a3050;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:9px 14px;font:inherit;cursor:pointer}
+button.go{background:var(--acc);border-color:var(--acc);color:#1a1a1a;font-weight:600}
+button.bad{color:var(--bad)}
+button:disabled{opacity:.4;cursor:default}
+@media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:52% 1fr}}
+</style>
+</head>
+<body>
+<header><h1>Live Chat</h1><span id="online"></span></header>
+<main>
+  <div class="stage">
+    <video id="them" autoplay playsinline></video>
+    <video id="me" autoplay playsinline muted></video>
+    <div id="status"></div>
+    <div id="gate">
+      <h2>Talk to someone new</h2>
+      <p>You will be paired with a random person. Your browser will ask to use your camera and microphone.</p>
+      <label><input type="checkbox" id="age"> I am 18 or older and will be respectful.</label>
+      <button class="go" id="start" disabled>Start</button>
+    </div>
+  </div>
+  <div class="side">
+    <div id="log"></div>
+    <form id="chatForm"><input type="text" id="txt" placeholder="Type a message" autocomplete="off" disabled><button id="send" disabled>Send</button></form>
+    <div class="bar">
+      <button class="go" id="next" disabled>Next</button>
+      <button id="mic">Mute</button>
+      <button id="cam">Camera off</button>
+      <button class="bad" id="report" disabled>Report</button>
+      <button id="stop">Stop</button>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
+let ws, pc, local;
+
+const tx = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+const status = t => $('status').textContent = t;
+function say(text, who) {
+  const p = document.createElement('p');
+  p.className = 'm ' + (who || '');
+  if (who === 's') p.textContent = text;
+  else { const b = document.createElement('b'); b.textContent = who === 'y' ? 'You: ' : 'Stranger: '; p.append(b, text); }
+  $('log').append(p); $('log').scrollTop = 1e9;
+}
+function chatOn(on) { $('txt').disabled = !on; $('send').disabled = !on; $('report').disabled = !on; }
+function closePeer() { if (pc) { pc.close(); pc = null; } $('them').srcObject = null; chatOn(false); }
+function find() { closePeer(); $('log').innerHTML = ''; status('Looking for someone...'); tx({ t: 'find' }); }
+
+async function start() {
+  if (local) local.getTracks().forEach(t => t.stop());
+  try { local = await navigator.mediaDevices.getUserMedia({ video: true, audio: true }); }
+  catch (e) { alert('Camera and microphone access is needed. Allow it in your browser and open this page in its own tab.'); return; }
+  $('me').srcObject = local; $('gate').hidden = true; $('next').disabled = false;
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  ws.onopen = find;
+  ws.onclose = () => { closePeer(); $('next').disabled = true; status(''); $('gate').hidden = false; };
+  ws.onmessage = async e => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'online') $('online').textContent = m.n + ' online';
+    else if (m.t === 'matched') await call(m.init);
+    else if (m.t === 'signal') await signal(m.data);
+    else if (m.t === 'chat') say(m.text, '');
+    else if (m.t === 'left') { find(); say('Stranger left. Looking for someone new...', 's'); }
+  };
+}
+
+async function call(init) {
+  const mine = pc = new RTCPeerConnection(ICE);
+  local.getTracks().forEach(t => mine.addTrack(t, local));
+  mine.ontrack = e => { $('them').srcObject = e.streams[0]; status(''); };
+  mine.onicecandidate = e => e.candidate && tx({ t: 'signal', data: { ice: e.candidate } });
+  mine.onconnectionstatechange = () => { if (pc === mine && mine.connectionState === 'failed') status('Connection failed. Press Next.'); };
+  chatOn(true); say('Connected. Say hi!', 's'); status('Connecting...');
+  if (init) { await mine.setLocalDescription(await mine.createOffer()); tx({ t: 'signal', data: { sdp: mine.localDescription } }); }
+}
+
+async function signal(d) {
+  if (!pc) return;
+  try {
+    if (d.sdp) {
+      await pc.setRemoteDescription(d.sdp);
+      if (d.sdp.type === 'offer') { await pc.setLocalDescription(await pc.createAnswer()); tx({ t: 'signal', data: { sdp: pc.localDescription } }); }
+    } else if (d.ice) await pc.addIceCandidate(d.ice);
+  } catch (e) { console.warn(e); }
+}
+
+$('age').onchange = () => $('start').disabled = !$('age').checked;
+$('start').onclick = start;
+$('next').onclick = find;
+$('stop').onclick = () => ws && ws.close();
+$('report').onclick = () => { tx({ t: 'report' }); find(); say('Reported. Looking for someone new...', 's'); };
+$('mic').onclick = () => { const t = local && local.getAudioTracks()[0]; if (!t) return; t.enabled = !t.enabled; $('mic').textContent = t.enabled ? 'Mute' : 'Unmute'; };
+$('cam').onclick = () => { const t = local && local.getVideoTracks()[0]; if (!t) return; t.enabled = !t.enabled; $('cam').textContent = t.enabled ? 'Camera off' : 'Camera on'; };
+$('chatForm').onsubmit = e => {
+  e.preventDefault();
+  const v = $('txt').value.trim(); if (!v || !pc) return;
+  tx({ t: 'chat', text: v }); say(v, 'y'); $('txt').value = '';
+};
+</script>
+</body>
+</html>
